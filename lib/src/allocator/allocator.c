@@ -18,14 +18,21 @@ typedef uint128_t word_t;
 #define WBITS (128)
 
 #if WBITS == 128
-#define WORD_FORMAT   "0x%016lX %016lX"
 
-uint64_t get_uint64(uint128_t input, uint32_t w_idx) {
+#define WORD_FORMAT "0x%016lX %016lX"
+static uint64_t
+get_uint64(uint128_t input, uint32_t w_idx) {
     assert(w_idx == 0 || w_idx == 1);
-    cast_128_t temp = {.u128 = input};
+    cast_128_t temp = { .u128 = input };
     return temp.u64[w_idx];
 }
 #define WORD_PRINT(X) get_uint64(X, 0), get_uint64(X, 1)
+
+static inline uint32_t
+BITCOUNT(uint128_t x) {
+    const cast_128_t temp = { .u128 = x };
+    return bitcount_64(temp.u64[0]) + bitcount_64(temp.u64[1]);
+}
 
 const word_t SHIFT_HELPER = 1;
 #define X_TEMP MACRO_COMBINE(_X, ln)
@@ -68,12 +75,27 @@ const word_t SHIFT_HELPER = 1;
 
 #define SHIFT_HELPER (1UL)
 
+#define BITCOUNT(X) bitcount_64(X)
+
 #define mm_ff0_asm_tz(X, Y) ff0_asm_tz(X, Y)
 #define mm_ff1_asm_tz(X, Y) ff1_asm_tz(X, Y)
 #define mm_fl1_asm_lz(X, Y) fl1_asm_lz(X, Y)
 #endif
 
 
+//#define MM_DEBUG
+#ifdef MM_DEBUG
+#define MM_DBG_CHECK                    dbg_count_active_pages(__LINE__)
+#define MM_DBG_VASSERT(X, msg, args...) DBG_ASSERT(X, msg, ##args)
+#define MM_DBG_ASSERT(X)                assert(X)
+#else
+#define MM_DBG_CHECK 0
+#define MM_DBG_VASSERT(X, msg, args...)
+#define MM_DBG_ASSERT(X)
+#endif
+
+//if uint128 is used then 2 ^ 33 ~ 8GB if uint64 is used 2 ^ 30 ~ 1 GB
+//#define MM_DEFAULT_LENGTH    ((WBITS * WBITS * WBITS * PAGE_SIZE) + sizeof(region_head_t))
 #define MM_DEFAULT_LENGTH    ((1UL) << 30)
 #define MM_DEFAULT_BASE_ADDR 0
 
@@ -84,9 +106,8 @@ const word_t SHIFT_HELPER = 1;
 #define MM_MIN_SIZE     (16)
 #define MM_LOG_MIN_SIZE (4)
 
-#define MM_N_L1_VECS ((MM_DEFAULT_LENGTH / ((WBITS)*PAGE_SIZE)) / WBITS)
-
-#define MM_N_L2_VECS (MM_DEFAULT_LENGTH / ((WBITS)*PAGE_SIZE))
+#define MM_N_L1_VECS (WBITS)
+#define MM_N_L2_VECS (WBITS * WBITS)
 
 
 #if WBITS == 128
@@ -137,7 +158,7 @@ init() {
                                 0);
 
     memset(addr_start->l2_vecs, ~(0), sizeof(word_t) * MM_N_L2_VECS);
-    addr_start->l0_vec = ~(0UL);
+    addr_start->l0_vec = MM_L1_VEC_FULL;
     PRINT(LOW_VERBOSE,
           "%s:%s:%d -> Init New Address Heap\n"
           "\tStart  : %p\n"
@@ -149,6 +170,7 @@ init() {
           addr_start,
           ((uint8_t *)addr_start) + MM_DEFAULT_LENGTH,
           MM_DEFAULT_LENGTH);
+    MM_DBG_ASSERT(MM_DBG_CHECK == 0);
 }
 //////////////////////////////////////////////////////////////////////
 static inline uint32_t
@@ -204,7 +226,7 @@ try_place(word_t         l1_vec,
         l1_vec ^= ((SHIFT_HELPER) << l2_idx);
 
 
-        assert(l2_vecs[l2_idx] != MM_L2_VEC_FULL);
+        MM_DBG_ASSERT(l2_vecs[l2_idx] != MM_L2_VEC_FULL);
 
         word_t temp_l2_vec = l2_vecs[l2_idx] & (l2_vecs[l2_idx] >> npages);
 
@@ -349,10 +371,10 @@ find_contig_region(const uint32_t npages, const uint32_t max_npage_bit) {
                       WORD_PRINT(l2_size_vecs[WBITS * i + l1_idx]));
 
 #if WBITS == 64
-                assert(bitcount_64((erase_mask << l2_idx)) ==
-                       bitcount_64(erase_mask));
+                MM_DBG_ASSERT(BITCOUNT((erase_mask << l2_idx)) ==
+                              BITCOUNT(erase_mask));
 #endif
-                assert(
+                MM_DBG_ASSERT(
                     (l2_vecs[WBITS * i + l1_idx] ^ (erase_mask << l2_idx)) ==
                     (l2_vecs[WBITS * i + l1_idx] & (~(erase_mask << l2_idx))));
 
@@ -364,8 +386,9 @@ find_contig_region(const uint32_t npages, const uint32_t max_npage_bit) {
 
                 l2_size_vecs[WBITS * i + l1_idx] |= (size_mask) << l2_idx;
 
-                assert(get_size(l2_size_vecs[WBITS * i + l1_idx], l2_idx) ==
-                       (npages | (SHIFT_HELPER << max_npage_bit)));
+                MM_DBG_ASSERT(
+                    get_size(l2_size_vecs[WBITS * i + l1_idx], l2_idx) ==
+                    (npages | (SHIFT_HELPER << max_npage_bit)));
 
 
                 if (!l2_vecs[WBITS * i + l1_idx]) {
@@ -405,13 +428,14 @@ find_contig_region(const uint32_t npages, const uint32_t max_npage_bit) {
                 const uint64_t page_start = (word_t)(addr_start + 1);
                 const uint64_t v_idx =
                     (((word_t)test_addr) - page_start) / PAGE_SIZE;
-                const uint32_t _l0_idx = (v_idx / (WBITS * WBITS)) & (WBITS - 1);
+                const uint32_t _l0_idx =
+                    (v_idx / (WBITS * WBITS)) & (WBITS - 1);
                 const uint32_t _l1_idx = (v_idx / WBITS) & (WBITS - 1);
                 const uint32_t _l2_idx = v_idx & (WBITS - 1);
 
-                assert(_l0_idx == i);
-                assert(_l1_idx == l1_idx);
-                assert(_l2_idx == l2_idx);
+                MM_DBG_ASSERT(_l0_idx == i);
+                MM_DBG_ASSERT(_l1_idx == l1_idx);
+                MM_DBG_ASSERT(_l2_idx == l2_idx);
 
 
                 return ((uint64_t)(addr_start + 1)) +
@@ -427,6 +451,8 @@ dealloc(void * addr) {
     if (!addr) {
         return;
     }
+    uint32_t start_count = MM_DBG_CHECK;
+
     const uint64_t page_start = (word_t)(addr_start + 1);
     const uint64_t v_idx      = (((word_t)addr) - page_start) / PAGE_SIZE;
 
@@ -435,44 +461,45 @@ dealloc(void * addr) {
     const uint32_t l2_idx = v_idx & (WBITS - 1);
 
 
-    const uint32_t npages = get_size(
-        addr_start->l2_size_vecs[WBITS * l0_idx + l1_idx],
-        l2_idx);
-    const word_t erase = (((SHIFT_HELPER) << npages) - 1) << v_idx;
+    const uint32_t npages =
+        get_size(addr_start->l2_size_vecs[WBITS * l0_idx + l1_idx], l2_idx);
+    const word_t erase = (((SHIFT_HELPER) << npages) - 1);
 
 
-    PRINT(
-        LOW_VERBOSE,
-        "%s:%s:%d -> Dealloc Pre Process\n"
-        "\taddress        : %p\n"
-        "\tv_idx          : %lu\n"
-        "\tl0_idx         : %d\n"
-        "\tl1_idx         : %d\n"
-        "\tl2_idx         : %d\n"
-        "\tl0_vec         : " WORD_FORMAT
-        "\n"
-        "\tl1_vec         : " WORD_FORMAT
-        "\n"
-        "\tl2_vec         : " WORD_FORMAT
-        "\n"
-        "\tl2_vec_size    : " WORD_FORMAT "\n\n",
-        __FILE__,
-        __FUNCTION__,
-        __LINE__,
-        addr,
-        v_idx,
-        l0_idx,
-        l1_idx,
-        l2_idx,
-        WORD_PRINT(addr_start->l0_vec),
-        WORD_PRINT(addr_start->l1_vecs[l0_idx]),
-        WORD_PRINT(
-            addr_start->l2_vecs[WBITS * l0_idx + l1_idx]),
-        WORD_PRINT(
-            addr_start->l2_size_vecs[WBITS * l0_idx + l1_idx]));
+    PRINT(LOW_VERBOSE,
+          "%s:%s:%d -> Dealloc Pre Process\n"
+          "\taddress        : %p\n"
+          "\tnpages         : %d\n"
+          "\terase          : " WORD_FORMAT
+          "\n"
+          "\tv_idx          : %lu\n"
+          "\tl0_idx         : %d\n"
+          "\tl1_idx         : %d\n"
+          "\tl2_idx         : %d\n"
+          "\tl0_vec         : " WORD_FORMAT
+          "\n"
+          "\tl1_vec         : " WORD_FORMAT
+          "\n"
+          "\tl2_vec         : " WORD_FORMAT
+          "\n"
+          "\tl2_vec_size    : " WORD_FORMAT "\n\n",
+          __FILE__,
+          __FUNCTION__,
+          __LINE__,
+          addr,
+          npages,
+          WORD_PRINT(erase),
+          v_idx,
+          l0_idx,
+          l1_idx,
+          l2_idx,
+          WORD_PRINT(addr_start->l0_vec),
+          WORD_PRINT(addr_start->l1_vecs[l0_idx]),
+          WORD_PRINT(addr_start->l2_vecs[WBITS * l0_idx + l1_idx]),
+          WORD_PRINT(addr_start->l2_size_vecs[WBITS * l0_idx + l1_idx]));
 
 
-    assert(npages + l2_idx <= WBITS);
+    MM_DBG_ASSERT(npages + l2_idx <= WBITS);
     if (!addr_start->l2_vecs[WBITS * l0_idx + l1_idx]) {
         if (!addr_start->l1_vecs[l0_idx]) {
             addr_start->l0_vec ^= ((SHIFT_HELPER) << l0_idx);
@@ -481,35 +508,46 @@ dealloc(void * addr) {
     }
     addr_start->l2_vecs[WBITS * l0_idx + l1_idx] ^= (erase << l2_idx);
 
-    PRINT(
-        LOW_VERBOSE,
-        "%s:%s:%d -> Dealloc Post Process\n"
-        "\taddress        : %p\n"
-        "\tv_idx          : %lu\n"
-        "\tl0_idx         : %d\n"
-        "\tl1_idx         : %d\n"
-        "\tl2_idx         : %d\n"
-        "\tl0_vec         : " WORD_FORMAT
-        "\n"
-        "\tl1_vec         : " WORD_FORMAT
-        "\n"
-        "\tl2_vec         : " WORD_FORMAT
-        "\n"
-        "\tl2_vec_size    : " WORD_FORMAT "\n\n",
-        __FILE__,
-        __FUNCTION__,
-        __LINE__,
-        addr,
-        v_idx,
-        l0_idx,
-        l1_idx,
-        l2_idx,
-        WORD_PRINT(addr_start->l0_vec),
-        WORD_PRINT(addr_start->l1_vecs[l0_idx]),
-        WORD_PRINT(
-            addr_start->l2_vecs[WBITS * l0_idx + l1_idx]),
-        WORD_PRINT(
-            addr_start->l2_size_vecs[WBITS * l0_idx + l1_idx]));
+    PRINT(LOW_VERBOSE,
+          "%s:%s:%d -> Dealloc Post Process\n"
+          "\taddress        : %p\n"
+          "\tnpages         : %d\n"
+          "\terase          : " WORD_FORMAT
+          "\tv_idx          : %lu\n"
+          "\tl0_idx         : %d\n"
+          "\tl1_idx         : %d\n"
+          "\tl2_idx         : %d\n"
+          "\tl0_vec         : " WORD_FORMAT
+          "\n"
+          "\tl1_vec         : " WORD_FORMAT
+          "\n"
+          "\tl2_vec         : " WORD_FORMAT
+          "\n"
+          "\tl2_vec_size    : " WORD_FORMAT "\n\n",
+          __FILE__,
+          __FUNCTION__,
+          __LINE__,
+          addr,
+          npages,
+          WORD_PRINT(erase),
+          v_idx,
+          l0_idx,
+          l1_idx,
+          l2_idx,
+          WORD_PRINT(addr_start->l0_vec),
+          WORD_PRINT(addr_start->l1_vecs[l0_idx]),
+          WORD_PRINT(addr_start->l2_vecs[WBITS * l0_idx + l1_idx]),
+          WORD_PRINT(addr_start->l2_size_vecs[WBITS * l0_idx + l1_idx]));
+
+    uint32_t after_count = MM_DBG_CHECK;
+    MM_DBG_VASSERT(start_count - npages == after_count,
+                   "Invalid Count on Allocation\n"
+                   "\tstart         : %d\n"
+                   "\tpages         : %d\n"
+                   "\tafter         : %d\n",
+                   start_count,
+                   npages,
+                   after_count);
 }
 
 void *
@@ -523,7 +561,7 @@ alloc(const size_t size) {
     if (size > (WBITS * PAGE_SIZE)) {
         assert(0);
     }
-
+    uint32_t start_count = MM_DBG_CHECK;
 
     uint32_t npages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
     uint32_t max_npage_bit;
@@ -545,5 +583,68 @@ alloc(const size_t size) {
           max_npage_bit,
           npages | (1 << max_npage_bit));
 
-    return (void *)find_contig_region(npages, max_npage_bit);
+    void * const ret = (void *)find_contig_region(npages, max_npage_bit);
+
+    uint32_t after_count = MM_DBG_CHECK;
+    MM_DBG_VASSERT(
+        (start_count + (size + PAGE_SIZE - 1) / PAGE_SIZE) == after_count,
+        "Invalid Count on Allocation\n"
+        "\tstart         : %d\n"
+        "\tsize          : %lu\n"
+        "\tpages         : %lu\n"
+        "\tafter         : %d\n",
+        start_count,
+        size,
+        (size + PAGE_SIZE - 1) / PAGE_SIZE,
+        after_count);
+
+    return ret;
+}
+
+uint32_t
+dbg_count_active_pages(uint32_t ln) {
+
+    uint32_t       total_pages = 0;
+    const word_t   l0_vec      = addr_start->l0_vec;
+    word_t * const l1_vecs     = addr_start->l1_vecs;
+    word_t * const l2_vecs     = addr_start->l2_vecs;
+
+    for (uint32_t i = 0; i < MM_N_L2_VECS; i++) {
+        if (l2_vecs[i] == MM_L2_VEC_FULL) {
+            MM_DBG_VASSERT(
+                l1_vecs[(i / WBITS)] & (SHIFT_HELPER << (i & (WBITS - 1))),
+                "Error: Invalid L1 for a full L2: %d\n",
+                ln);
+        }
+        else {
+            MM_DBG_VASSERT(
+                !(l1_vecs[(i / WBITS)] & (SHIFT_HELPER << (i & (WBITS - 1)))),
+                "Error: Invalid L1 for a partial L2: %d\n",
+                ln);
+        }
+        if (l1_vecs[(i / WBITS)] == MM_L1_VEC_FULL) {
+            MM_DBG_VASSERT(!(l0_vec & (SHIFT_HELPER << (i / WBITS))),
+                           "Error: Invalid L0 for a full L1: %d\n",
+                           ln);
+        }
+        else {
+            MM_DBG_VASSERT((l0_vec & (SHIFT_HELPER << (i / WBITS))),
+                           "Error: Invalid L0 for a partial L1: %d\n"
+                           "\tl0_vec       : " WORD_FORMAT
+                           "\n"
+                           "\tl1_vec       : " WORD_FORMAT
+                           "\n"
+                           "\ti            : %d\n"
+                           "\ti_l1         : %d\n"
+                           "\ti_l0         : %d\n\n",
+                           ln,
+                           WORD_PRINT(l0_vec),
+                           WORD_PRINT(l1_vecs[i / WBITS]),
+                           i,
+                           i / WBITS,
+                           i / WBITS);
+        }
+        total_pages += (WBITS - BITCOUNT(l2_vecs[i]));
+    }
+    return total_pages;
 }

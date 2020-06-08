@@ -3,6 +3,7 @@
 int32_t verbose = 0;
 int32_t rseed   = 0;
 int32_t tsize   = (10);
+int32_t test = 0;
 
 // clang-format off
 #define Version "0.1"
@@ -11,6 +12,7 @@ static ArgOption args[] = {
   { KindOption,   Integer, 		"-v", 	    0,     &verbose, 		"Set verbosity level" },
   { KindOption,   Integer, 		"--seed", 	0,     &rseed,  		"Set random number seed" },
   { KindOption,   Integer, 		"-n",    	0,     &tsize,  		"Set random number seed" },
+  { KindOption,   Integer, 		"--case",  	0,     &test,    		"Set random number seed" },
   { KindHelp,     Help, 	"-h" },
   { KindEnd }
 };
@@ -54,7 +56,7 @@ main(int argc, char ** argv) {
     uint32_t true_idx = 0;
 
 
-    if (verbose == 0) {
+    if (test == 0) {
         start_cycles = grabTSC();
         for (int32_t i = 0; i < tsize; i++) {
             free_arr[i] = alloc(sizes[(true_idx++) & (nsizes - 1)]);
@@ -71,7 +73,7 @@ main(int argc, char ** argv) {
         }
         end_cycles = grabTSC();
     }
-    else if (verbose == 1) {
+    else if (test == 1) {
         start_cycles = grabTSC();
         for (int32_t i = 0; i < tsize; i++) {
             free_arr[i] = malloc(sizes[(true_idx++) & (nsizes - 1)]);
