@@ -1,7 +1,7 @@
 #include "driver.h"
 
-int32_t  verbose = 0;
-int32_t  rseed   = 0;
+int32_t verbose = 0;
+int32_t rseed   = 0;
 int32_t tsize   = (10);
 
 // clang-format off
@@ -49,12 +49,12 @@ main(int argc, char ** argv) {
     for (int32_t i = 0; i < tsize; i++) {
         free_arr[i] = 0;
     }
-    uint64_t start_cycles, end_cycles;
-    int32_t incr     = (256);
+    uint64_t start_cycles = 0, end_cycles = 0;
+    int32_t  incr     = (256);
     uint32_t true_idx = 0;
 
 
-    if (verbose == 0 || 1) {
+    if (verbose == 0) {
         start_cycles = grabTSC();
         for (int32_t i = 0; i < tsize; i++) {
             free_arr[i] = alloc(sizes[(true_idx++) & (nsizes - 1)]);
@@ -71,7 +71,7 @@ main(int argc, char ** argv) {
         }
         end_cycles = grabTSC();
     }
-    else {
+    else if (verbose == 1) {
         start_cycles = grabTSC();
         for (int32_t i = 0; i < tsize; i++) {
             free_arr[i] = malloc(sizes[(true_idx++) & (nsizes - 1)]);
@@ -87,6 +87,15 @@ main(int argc, char ** argv) {
             free(free_arr[i]);
         }
         end_cycles = grabTSC();
+    }
+    else {
+        void * ptrs[100000 / 2000];
+        for (uint32_t i = 0; i < 100000; i += 2000) {
+            ptrs[i / 2000] = alloc(i);
+        }
+        for (uint32_t i = 0; i < 100000; i += 2000) {
+            dealloc(ptrs[i / 2000]);
+        }
     }
 
     fprintf(stderr, "Cycles: %.8E\n", (double)(end_cycles - start_cycles));

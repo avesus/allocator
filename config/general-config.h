@@ -36,7 +36,7 @@ BROKEN //this is just to cause compiler error
 #define DEBUG_MODE
 #define USAGE_CHECK
 
-//#define VERBOSE_OFF
+#define VERBOSE_OFF
 #ifndef VERBOSE_OFF
 #define ERROR_VERBOSE 0
 #define LOW_VERBOSE 1
