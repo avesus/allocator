@@ -6,6 +6,6 @@
 
 #define MM_ALIGNMENT (16)
 
-void * alloc(const uint64_t size);
+void * alloc(const size_t size);
 void   dealloc(void * addr);
 #endif
