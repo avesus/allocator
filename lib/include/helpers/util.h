@@ -36,7 +36,7 @@ extern const char * progname;
 #define DBG_ASSERT(X, msg, args...)                                            \
     {                                                                          \
         if (__builtin_expect((!(X)), 0)) {                                     \
-            die(msg, ##args);                                               \
+            die(msg, ##args);                                                  \
         }                                                                      \
     }
 
