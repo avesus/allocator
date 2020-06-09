@@ -126,7 +126,7 @@ const uint128_t l2_full = 0;
 #define META_DATA_SIZE                                                         \
     ((sizeof(word_t) + MM_N_L1_VECS * sizeof(word_t) +                         \
       2 * MM_N_L2_VECS * sizeof(word_t) +                                      \
-      2 * MM_N_SMALL_REGIONS * sizeof(struct small_region *)) %                \
+      1 * MM_N_SMALL_REGIONS * sizeof(struct small_region *)) %                \
      PAGE_SIZE)
 
 typedef struct region_head {
@@ -137,12 +137,11 @@ typedef struct region_head {
     word_t l2_size_vecs[MM_N_L2_VECS];
 
     struct small_region * ll_heads[MM_N_SMALL_REGIONS];
-    struct small_region * ll_tails[MM_N_SMALL_REGIONS];
 
     uint8_t padding[PAGE_SIZE - META_DATA_SIZE];
 } region_head_t;
 
-#define MM_SR_GET_N_VECS(X) (((PAGE_SIZE / (X)) / 64) + 1)
+#define MM_SR_GET_N_VECS(X) ((((PAGE_SIZE - 1) / (X)) / 64) + 1)
 #define MM_SR_ADDR_TO_IDX(W, X, Y, Z)                                          \
     ((((uint64_t)(W)) -                                                        \
       (((uint64_t)(X)) + sizeof(uint64_t) * (((Y) | 0x1) + 1))) /              \
@@ -555,9 +554,7 @@ find_contig_region(const uint32_t npages, const uint32_t max_npage_bit) {
 }
 
 static void
-remove_ll(small_region_t ** const head,
-          small_region_t ** const tail,
-          small_region_t * const  sr) {
+remove_ll(small_region_t ** const head, small_region_t * const sr) {
 
     if (MM_SR_GET_NEXT(sr->region_size_and_ptrs) == 0 &&
         MM_SR_GET_PREV(sr->region_size_and_ptrs) == 0) {
@@ -568,15 +565,12 @@ remove_ll(small_region_t ** const head,
               __FUNCTION__,
               __LINE__);
 
-        MM_DBG_ASSERT((*tail) == sr);
         MM_DBG_ASSERT((*head) == sr);
-        (*tail) = 0;
         (*head) = 0;
     }
     else if (MM_SR_GET_NEXT(sr->region_size_and_ptrs) != 0 &&
              MM_SR_GET_PREV(sr->region_size_and_ptrs) == 0) {
 
-        MM_DBG_ASSERT((*tail) != 0);
         MM_DBG_ASSERT((*head) != 0);
         PRINT(LOW_VERBOSE,
               "%s:%s:%d -> Empty block - 2\n",
@@ -584,7 +578,6 @@ remove_ll(small_region_t ** const head,
               __FUNCTION__,
               __LINE__);
 
-        MM_DBG_ASSERT((*tail) != sr);
         MM_DBG_ASSERT((*head) == sr);
         (*head) = MM_SR_GET_NEXT(sr->region_size_and_ptrs);
         MM_SR_SET_PREV((*head)->region_size_and_ptrs, 0);
@@ -592,7 +585,6 @@ remove_ll(small_region_t ** const head,
     else if (MM_SR_GET_NEXT(sr->region_size_and_ptrs) == 0 &&
              MM_SR_GET_PREV(sr->region_size_and_ptrs) != 0) {
 
-        MM_DBG_ASSERT((*tail) != 0);
         MM_DBG_ASSERT((*head) != 0);
         PRINT(LOW_VERBOSE,
               "%s:%s:%d -> Empty block - 3\n",
@@ -600,21 +592,13 @@ remove_ll(small_region_t ** const head,
               __FUNCTION__,
               __LINE__);
 
-        MM_DBG_ASSERT((*tail) == sr);
         MM_DBG_ASSERT((*head) != sr);
-
-        (*tail) = MM_SR_GET_PREV(sr->region_size_and_ptrs);
-
-
-        MM_SR_SET_NEXT((*tail)->region_size_and_ptrs, 0);
-        MM_DBG_ASSERT(MM_SR_GET_NEXT((*tail)->region_size_and_ptrs) == 0);
+        MM_SR_SET_NEXT(
+            MM_SR_GET_PREV(sr->region_size_and_ptrs)->region_size_and_ptrs,
+            0);
     }
     else {
-
-        MM_DBG_ASSERT((*tail) != 0);
         MM_DBG_ASSERT((*head) != 0);
-
-        MM_DBG_ASSERT((*tail) != sr);
         MM_DBG_ASSERT((*head) != sr);
 
         PRINT(LOW_VERBOSE,
@@ -646,8 +630,6 @@ dealloc_small(void * addr) {
     uint32_t       i;
 
     small_region_t ** const head = addr_start->ll_heads + list_idx;
-    small_region_t ** const tail = addr_start->ll_tails + list_idx;
-
 
     PRINT(LOW_VERBOSE,
           "%s:%s:%d -> Dealloc Small\n"
@@ -676,27 +658,6 @@ dealloc_small(void * addr) {
 
     sr->vecs[vec_idx / 64] ^= ((1UL) << (vec_idx % 64));
 
-    // check to see if small regin is empty
-    for (i = 0;
-         (i < nvecs) && ((i == (nvecs - 1)) ? (sr->vecs[i] == last_avails)
-                                            : (sr->vecs[i] == (~(0UL))));
-         i++) {
-    }
-    if (i == nvecs) {
-        PRINT(LOW_VERBOSE,
-              "%s:%s:%d -> Empty block\n",
-              __FILE__,
-              __FUNCTION__,
-              __LINE__);
-
-        // entire region is empty (might want to put this only in case where
-        // there are other blocks of in size class in list)
-        MM_DBG_ASSERT((*tail) != 0);
-        MM_DBG_ASSERT((*head) != 0);
-        remove_ll(head, tail, sr);
-
-        return dealloc((void *)sr);
-    }
 
     PRINT(LOW_VERBOSE,
           "%s:%s:%d -> Partial Block\n",
@@ -713,13 +674,35 @@ dealloc_small(void * addr) {
               __FUNCTION__,
               __LINE__);
 
-        MM_DBG_ASSERT((*tail) == 0);
         MM_DBG_ASSERT(MM_SR_GET_NEXT(sr->region_size_and_ptrs) == 0);
         MM_DBG_ASSERT(MM_SR_GET_PREV(sr->region_size_and_ptrs) == 0);
 
         (*head) = sr;
-        (*tail) = sr;
+        return;
     }
+
+    for (i = 0;
+         (i < nvecs) && ((i == (nvecs - 1)) ? (sr->vecs[i] == last_avails)
+                                            : (sr->vecs[i] == (~(0UL))));
+         i++) {
+    }
+    // check to see if small regin is empty
+    if (i == nvecs) {
+        PRINT(LOW_VERBOSE,
+              "%s:%s:%d -> Empty block\n",
+              __FILE__,
+              __FUNCTION__,
+              __LINE__);
+
+        // entire region is empty (might want to put this only in case where
+        // there are other blocks of in size class in list)
+        MM_DBG_ASSERT((*head) != 0);
+        remove_ll(head, sr);
+
+        return dealloc((void *)sr);
+    }
+
+
     // not in list
     else if ((sr->region_size_and_ptrs & (~SIZE_MASK)) == 0 && (*head) != sr) {
 
@@ -732,39 +715,11 @@ dealloc_small(void * addr) {
         MM_DBG_ASSERT(MM_SR_GET_PREV(sr->region_size_and_ptrs) == 0);
         MM_DBG_ASSERT(MM_SR_GET_NEXT(sr->region_size_and_ptrs) == 0);
 
-        MM_DBG_ASSERT(sr != (*tail));
-        MM_DBG_ASSERT(sr != (*head));
-
-        MM_DBG_ASSERT((*tail) != 0);
-        MM_DBG_ASSERT((*head) != 0);
-
         MM_DBG_ASSERT(size == MM_SR_GET_SIZE((*head)->region_size_and_ptrs));
-        MM_DBG_ASSERT(size == MM_SR_GET_SIZE((*tail)->region_size_and_ptrs));
 
-        // add to tail (idea is more full blocks will float to front)
-        MM_SR_SET_NEXT((*tail)->region_size_and_ptrs,
-                       sr);
-        MM_SR_SET_PREV(sr->region_size_and_ptrs,
-                       (*tail));
-
-        MM_DBG_ASSERT(MM_SR_GET_NEXT(sr->region_size_and_ptrs) == 0);
-
-        MM_DBG_ASSERT(
-            MM_SR_GET_NEXT(
-                (*tail)->region_size_and_ptrs) == sr);
-
-        MM_DBG_ASSERT(MM_SR_GET_NEXT(sr->region_size_and_ptrs) == 0);
-
-        MM_DBG_ASSERT(MM_SR_GET_PREV(sr->region_size_and_ptrs) ==
-                      (*tail));
-
-        MM_DBG_ASSERT(MM_SR_GET_NEXT(sr->region_size_and_ptrs) == 0);
-
-        (*tail) = sr;
-        MM_DBG_ASSERT(MM_SR_GET_NEXT(sr->region_size_and_ptrs) == 0);
-
-        MM_DBG_ASSERT((*tail) != 0);
-        MM_DBG_ASSERT((*head) != 0);
+        MM_SR_SET_NEXT(sr->region_size_and_ptrs, (*head));
+        MM_SR_SET_PREV((*head)->region_size_and_ptrs, sr);
+        (*head) = sr;
     }
 
 
@@ -777,12 +732,10 @@ alloc_small(const size_t rounded_size) {
     const uint32_t nvecs = MM_SR_GET_N_VECS(rounded_size);
     const uint64_t last_avails =
         MM_SMALL_VEC_LAST_AVAILS(rounded_size, nvecs | 0x1);
-    ;
 
     const uint32_t list_idx = (rounded_size / MM_MIN_SIZE) - 1;
 
     small_region_t ** const head = addr_start->ll_heads + list_idx;
-    small_region_t ** const tail = addr_start->ll_tails + list_idx;
 
 
     PRINT(LOW_VERBOSE,
@@ -791,17 +744,14 @@ alloc_small(const size_t rounded_size) {
           "\tnvecs              : %d\n"
           "\tlist_idx           : %d\n"
           "\tlast_avails        : 0x%016lX\n"
-          "\tHead               : %p\n"
-          "\tTail               : %p\n\n",
-          __FILE__,
+          "\tHead               : %p\n" __FILE__,
           __FUNCTION__,
           __LINE__,
           rounded_size,
           nvecs,
           list_idx,
           last_avails,
-          (*head),
-          (*tail));
+          (*head));
 
     small_region_t * sr = NULL;
 
@@ -818,13 +768,11 @@ alloc_small(const size_t rounded_size) {
               rounded_size,
               list_idx);
 
-        MM_DBG_ASSERT((*tail) == 0);
 
         sr = (small_region_t *)find_contig_region(0, 1);
         MM_DBG_ASSERT(sr);
-        sr->region_size_and_ptrs       = rounded_size / MM_MIN_SIZE;
-        (*head) = sr;
-        (*tail) = sr;
+        sr->region_size_and_ptrs = rounded_size / MM_MIN_SIZE;
+        (*head)                  = sr;
 
         for (uint32_t i = 0; i < nvecs - 1; i++) {
             sr->vecs[i] = (~(0UL));
@@ -887,9 +835,7 @@ alloc_small(const size_t rounded_size) {
               __FUNCTION__,
               __LINE__);
 
-        remove_ll(addr_start->ll_heads + list_idx,
-                  addr_start->ll_tails + list_idx,
-                  sr);
+        remove_ll(head, sr);
     }
 
 
@@ -1140,22 +1086,16 @@ dbg_count_active_pages(uint32_t ln) {
     word_t * const l2_vecs     = addr_start->l2_vecs;
 
     for (uint32_t i = 0; i < MM_N_SMALL_REGIONS; i++) {
-        if (addr_start->ll_tails[i] == 0) {
-            MM_DBG_ASSERT(addr_start->ll_heads[i] == 0);
+        if (addr_start->ll_heads[i] == 0) {
             continue;
         }
-        small_region_t * temp = addr_start->ll_tails[i];
-        MM_DBG_ASSERT(temp);
-        MM_DBG_ASSERT(MM_SR_GET_NEXT(temp->region_size_and_ptrs) == 0);
-
-        temp = addr_start->ll_heads[i];
+        small_region_t * temp = addr_start->ll_heads[i];
         MM_DBG_VASSERT(temp,
                        "Head and Tail Misaligned: %d\n"
-                       "\ti                 : %d\n"
-                       "\ttail              : %p\n\n",
+                       "\ti                 : %d\n",
                        ln,
-                       i,
-                       addr_start->ll_tails[i]);
+                       i);
+
 
         MM_DBG_ASSERT(MM_SR_GET_PREV(temp->region_size_and_ptrs) == 0);
 
@@ -1181,10 +1121,7 @@ dbg_count_active_pages(uint32_t ln) {
             prev_ptrs[prev_idx++] = temp;
 
             MM_DBG_ASSERT(MM_SR_GET_SIZE(temp->region_size_and_ptrs) == size);
-            if (MM_SR_GET_NEXT(temp->region_size_and_ptrs) == 0) {
-                MM_DBG_ASSERT(addr_start->ll_tails[i] == temp);
-            }
-            else {
+            if (MM_SR_GET_NEXT(temp->region_size_and_ptrs) != 0) {
                 MM_DBG_ASSERT(
                     MM_SR_GET_PREV(MM_SR_GET_NEXT(temp->region_size_and_ptrs)
                                        ->region_size_and_ptrs) == temp);
