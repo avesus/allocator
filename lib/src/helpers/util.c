@@ -82,7 +82,7 @@ dieOnErrno(const char * fn,
     fprintf(stderr, "------------- Stack Trace End ---------------\n");
 #endif
     FDBG_PRINT_FRAMES;
-    exit(-1);
+    abort();
 }
 
 
@@ -101,7 +101,7 @@ _die(const char * fn, int32_t ln, const char * fmt, ...) {
     fprintf(stderr, "------------- Stack Trace End ---------------\n");
 #endif
     FDBG_PRINT_FRAMES;
-    exit(-1);
+    abort();
 }
 
 //////////////////////////////////////////////////////////////////////

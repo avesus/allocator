@@ -41,9 +41,9 @@ main(int argc, char ** argv) {
     const uint32_t nsizes = 1 << 20;
     uint32_t *     sizes  = (uint32_t *)mymmap_alloc(nsizes * sizeof(uint32_t));
     for (uint32_t i = 0; i < nsizes; i++) {
-        sizes[i] = rand() % (32 * PAGE_SIZE);
+        sizes[i] = rand() % (4 * PAGE_SIZE);
         while (sizes[i] == 0) {
-            sizes[i] = rand() % (32 * PAGE_SIZE);
+            sizes[i] = rand() % (4 * PAGE_SIZE);
         }
     }
 
