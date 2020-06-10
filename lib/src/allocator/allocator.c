@@ -146,7 +146,7 @@ get_size(const word_t l2_size_vec, const uint32_t l2_v_pos) {
     uint64_t size;
     if (l2_v_pos < 64) {
         ff0_asm_tz(l2_size_vec.u64[0] >> l2_v_pos, size);
-        if (size == (64 -  l2_v_pos)) {
+        if (size == (64 - l2_v_pos)) {
             ff0_asm_tz(l2_size_vec.u64[1], size);
             size += (64 - l2_v_pos);
         }
@@ -201,17 +201,17 @@ try_place(word_t               l1_vec,
           const word_t * const l2_vecs,
           const uint64_t       npage_info) {
 
-    uint64_t l2_v_pos, ret;
+    uint64_t l2_idx, ret;
     for (uint32_t i = 0; i < 2; i++) {
         while (l1_vec.u64[i]) {
-            ff1_asm_tz(l1_vec.u64[i], l2_v_pos);
-            l1_vec.u64[i] ^= (1UL) << l2_v_pos;
+            ff1_asm_tz(l1_vec.u64[i], l2_idx);
+            l1_vec.u64[i] ^= (1UL) << l2_idx;
 
             // each u64 represents 128 total slots (i == 1 is 64 offset)
-            l2_v_pos += 64 * i;
+            l2_idx += 64 * i;
 
-            word_t temp_l2_vec = { .u128 = l2_vecs[l2_v_pos].u128 &
-                                           (l2_vecs[l2_v_pos].u128 >>
+            word_t temp_l2_vec = { .u128 = l2_vecs[l2_idx].u128 &
+                                           (l2_vecs[l2_idx].u128 >>
                                             MM_NPI_N_LOWER(npage_info)) };
 
             uint32_t max_npage_bit_shift = (MM_NPI_MAX_BIT(npage_info)) / 2;
@@ -224,11 +224,11 @@ try_place(word_t               l1_vec,
             }
             if (temp_l2_vec.u64[0]) {
                 ff1_asm_tz(temp_l2_vec.u64[0], ret);
-                return (l2_v_pos << 32) | ret;
+                return (l2_idx << 32) | ret;
             }
             else if (temp_l2_vec.u64[1]) {
                 ff1_asm_tz(temp_l2_vec.u64[1], ret);
-                return (l2_v_pos << 32) | (ret + 64);
+                return (l2_idx << 32) | (ret + 64);
             }
         }
     }
@@ -375,42 +375,52 @@ find_contig_region(const uint32_t npage_info) {
     const uint128_t erase_mask =
         (SHIFT_HELPER << (MM_NPI_N_TOTAL(npage_info))) - 1;
 
-    const uint32_t r = rand()%64;
-    uint64_t l1_idx;
+    const uint32_t r = rand() % 64;
+    uint64_t       l1_idx;
     for (uint32_t i = 0; i < 2; i++) {
-        const uint32_t _i = i; //((npage_info & 0x1) - i) & 0x1;
-        uint64_t reshape_l0 = (l0_vec.u64[_i] >> r) | (l0_vec.u64[_i] >> (64 - r));
+        const uint32_t _i = i;  //((npage_info & 0x1) - i) & 0x1;
+        uint64_t       reshape_l0 =
+            (l0_vec.u64[_i] >> r) | (l0_vec.u64[_i] >> (64 - r));
         while (reshape_l0) {
             ff1_asm_tz(reshape_l0, l1_idx);
             reshape_l0 ^= ((1UL) << l1_idx);
 
-            l1_idx += 64 * _i + ((l1_idx >= r) ? (-1 * r) : (r));
+            l1_idx += 64 * _i;
+            if(l1_idx >= r) {
+                l1_idx -= r;
+            }
+            else {
+                l1_idx += r;
+            }
 
-            const uint64_t ret = try_place(l1_vecs[l1_idx],
-                                           l2_vecs + (WBITS * l1_idx),
-                                           npage_info);
+            if (l1_vecs[l1_idx].u128 != MM_VEC_FULL) {
+                const uint64_t ret = try_place(l1_vecs[l1_idx],
+                                               l2_vecs + (WBITS * l1_idx),
+                                               npage_info);
 
-            if (ret != MM_CONTINUE) {
-                const uint32_t l1_v_pos = ret >> 32;
-                const uint32_t l2_v_pos = ret;
+                if (ret != MM_CONTINUE) {
+                    const uint32_t l1_v_pos = ret >> 32;
+                    const uint32_t l2_v_pos = ret;
 
-                l2_vecs[WBITS * l1_idx + l1_v_pos].u128 ^=
-                    (erase_mask << l2_v_pos);
+                    l2_vecs[WBITS * l1_idx + l1_v_pos].u128 ^=
+                        (erase_mask << l2_v_pos);
 
-                l2_size_vecs[WBITS * l1_idx + l1_v_pos].u128 &=
-                    (~(erase_mask << l2_v_pos));
-                l2_size_vecs[WBITS * l1_idx + l1_v_pos].u128 |=
-                    ((erase_mask >> 1) << l2_v_pos);
+                    l2_size_vecs[WBITS * l1_idx + l1_v_pos].u128 &=
+                        (~(erase_mask << l2_v_pos));
+                    l2_size_vecs[WBITS * l1_idx + l1_v_pos].u128 |=
+                        ((erase_mask >> 1) << l2_v_pos);
 
-                if (l2_vecs[WBITS * l1_idx + l1_v_pos].u128 == MM_VEC_FULL) {
-                    l1_vecs[l1_idx].u128 ^= (SHIFT_HELPER) << l1_v_pos;
-                    if (l1_vecs[l1_idx].u128 == MM_VEC_FULL) {
-                        heap->l0_vec.u128 ^= ((SHIFT_HELPER) << l1_idx);
+                    if (l2_vecs[WBITS * l1_idx + l1_v_pos].u128 ==
+                        MM_VEC_FULL) {
+                        l1_vecs[l1_idx].u128 ^= (SHIFT_HELPER) << l1_v_pos;
+                        if (l1_vecs[l1_idx].u128 == MM_VEC_FULL) {
+                            heap->l0_vec.u128 ^= ((SHIFT_HELPER) << l1_idx);
+                        }
                     }
+                    return ((uint64_t)(heap + 1)) +
+                           PAGE_SIZE * (WBITS * WBITS * l1_idx +
+                                        WBITS * l1_v_pos + l2_v_pos);
                 }
-                return ((uint64_t)(heap + 1)) +
-                       PAGE_SIZE * (WBITS * WBITS * l1_idx + WBITS * l1_v_pos +
-                                    l2_v_pos);
             }
         }
     }
