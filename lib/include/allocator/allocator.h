@@ -6,8 +6,10 @@
 
 #define MM_ALIGNMENT (16)
 
-void * alloc(const size_t size);
-void   dealloc(void * addr);
+void     dealloc(void * const addr);
+void *   alloc(const size_t size);
+uint32_t check_heap(const char * const f,
+                    const char * const fn,
+                    const uint32_t     ln);
 
-uint32_t dbg_count_active_pages(uint32_t ln);
 #endif
