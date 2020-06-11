@@ -20,7 +20,7 @@ const uint128_t SHIFT_HELPER = 1;
 
 
 //#define MM_DEBUG
-#define WORD_FORMAT   "0x%016lX 016lX"
+#define WORD_FORMAT   "0x%016lX %016lX"
 #define WORD_PRINT(X) (X).u64[0], (X).u64[1]
 #ifdef MM_DEBUG
 #define MM_DBG_CHECK                    check_heap(__FILE__, __FUNCTION__, __LINE__)
@@ -254,10 +254,10 @@ init_heap() {
                                    MAP_ANONYMOUS | MAP_NORESERVE | MAP_PRIVATE,
                                    (-1),
                                    0);
-
+    
     memset(heap, (~0), sizeof(word_t) * (1 + MM_N_L1_VECS + MM_N_L2_VECS));
     heap_start =
-        ((((uint64_t)heap) + sizeof(word_t)) + MM_MED_REGION_SIZE - 1) &
+        ((((uint64_t)(heap + 1))) + MM_MED_REGION_SIZE - 1) &
         (~(MM_MED_REGION_SIZE - 1));
 
     MM_DBG_CHECK;
@@ -328,7 +328,7 @@ remove_small_region(small_region_t ** const head, const uint64_t sr_info) {
 
 static void
 dealloc_small(const uint64_t addr) {
-    
+
     MM_DBG_CHECK;
     small_region_t * const sr = (small_region_t *)(addr & (~(PAGE_SIZE - 1)));
 
@@ -344,11 +344,6 @@ dealloc_small(const uint64_t addr) {
 
     sr->vecs[vec_idx / 64] ^= ((1UL) << (vec_idx % 64));
 
-    if ((*head) == 0) {
-        (*head) = sr;
-        return;
-    }
-
     for (i = 0;
          (i < nvecs) && ((i == (nvecs - 1)) ? (sr->vecs[i] == last_avails)
                                             : (sr->vecs[i] == (~(0UL))));
@@ -356,7 +351,14 @@ dealloc_small(const uint64_t addr) {
     }
     if (i == nvecs) {
         remove_small_region(head, sr->info);
+        MM_DBG_CHECK;
         return dealloc((void *)sr);
+    }
+
+    else if ((*head) == 0) {
+        (*head) = sr;
+        MM_DBG_CHECK;
+        return;
     }
 
     // both ptrs are NULL and head != sr (i.e its not in list)
@@ -454,7 +456,7 @@ remove_med_region(med_region_t ** const head, const med_region_t * const mr) {
 
 static void
 dealloc_med(const uint64_t addr) {
-
+    MM_DBG_CHECK;
     med_region_t * const mr =
         (med_region_t * const)(addr & (~(MM_MED_REGION_SIZE - 1)));
 
@@ -468,8 +470,8 @@ dealloc_med(const uint64_t addr) {
 
     mr->vecs[v_pos / WBITS].u128 ^= (erase_mask << (v_pos % WBITS));
 
-    mr->avail_bits += nchunks;
 
+    mr->avail_bits += nchunks;
     if (mr->avail_bits == nchunks) {
         mr->prev = NULL;
         mr->next = heap->ll_mr_head;
@@ -481,27 +483,31 @@ dealloc_med(const uint64_t addr) {
     else if (mr->avail_bits == MM_MED_REGION_TOTAL_SLOTS) {
         remove_med_region(&heap->ll_mr_head, mr);
         unset_mr((const uint64_t)mr);
+        MM_DBG_CHECK;
         return dealloc((void *)mr);
     }
+
+    MM_DBG_CHECK;
 }
 
 static void *
 alloc_new_med(med_region_t ** const head, const uint32_t nchunks) {
     const uint128_t erase_mask = (SHIFT_HELPER << nchunks) - 1;
 
-    #ifdef MM_DEBUG
+#ifdef MM_DEBUG
     uint32_t start_count = MM_DBG_CHECK;
-    #endif
+#endif
 
     // 2 * size - 1 so we can make it an alligned alloc
     med_region_t * const mr = (med_region_t * const)find_contig_region_aligned(
         MM_MED_REGION_SIZE / PAGE_SIZE,
         MM_MED_REGION_SIZE / PAGE_SIZE);
 
-    #ifdef MM_DEBUG
-    MM_DBG_ASSERT(MM_DBG_CHECK == start_count + (MM_MED_REGION_SIZE / PAGE_SIZE));
+#ifdef MM_DEBUG
+    MM_DBG_ASSERT(MM_DBG_CHECK ==
+                  start_count + (MM_MED_REGION_SIZE / PAGE_SIZE));
     MM_DBG_ASSERT((((uint64_t)mr) % MM_MED_REGION_SIZE) == 0);
-    #endif
+#endif
 
     memset(mr->vecs + 1, (~0), sizeof(word_t) * (MM_MED_REGION_N_VECS - 2));
 
@@ -520,14 +526,12 @@ alloc_new_med(med_region_t ** const head, const uint32_t nchunks) {
 
     set_mr((const uint64_t)mr);
 
-    MM_DBG_CHECK;
     if (*head) {
         (*head)->prev = mr;
     }
     *head = mr;
 
     MM_DBG_CHECK;
-
     return (void *)(mr + 1);
 }
 
@@ -537,7 +541,7 @@ alloc_med(const size_t size) {
         (size + MM_MED_REGION_CHUNK_SIZE - 1) / MM_MED_REGION_CHUNK_SIZE;
     uint32_t max_chunk_bit;
 
-
+    MM_DBG_CHECK;
     const uint128_t erase_mask = (SHIFT_HELPER << nchunks) - 1;
 
     fl1_asm_lz(nchunks, max_chunk_bit);
@@ -590,7 +594,7 @@ alloc_med(const size_t size) {
                 if (mr->avail_bits == 0) {
                     remove_med_region(head, mr);
                 }
-
+                MM_DBG_CHECK;
                 return (void *)(((uint64_t)(mr + 1)) +
                                 MM_MED_REGION_CHUNK_SIZE *
                                     (WBITS * _i + v_pos));
@@ -742,17 +746,22 @@ dealloc(void * const addr) {
     if (!addr) {
         return;
     }
+    MM_DBG_CHECK;
     if (is_med_region((const uint64_t)addr)) {
-        return dealloc_med((const uint64_t)addr);
+        dealloc_med((const uint64_t)addr);
+        MM_DBG_CHECK;
+        return;
     }
     else if (MM_IS_SMALL_REGION_ADDR(addr)) {
-        return dealloc_small((const uint64_t)addr);
+        dealloc_small((const uint64_t)addr);
+        MM_DBG_CHECK;
+        return;
     }
 
 #ifdef MM_DEBUG
     uint32_t start_count = MM_DBG_CHECK;
 #endif
-
+    
     const uint64_t v_idx = (((uint64_t)addr) - heap_start) / PAGE_SIZE;
 
     const uint32_t l0_idx   = (v_idx / (WBITS * WBITS)) & (WBITS - 1);
@@ -763,14 +772,16 @@ dealloc(void * const addr) {
         get_size(heap->l2_size_vecs[WBITS * l0_idx + l1_v_pos], l2_v_pos);
 
     const uint128_t erase_mask = (((SHIFT_HELPER) << npages) - 1);
-
+    
     if (heap->l2_vecs[WBITS * l0_idx + l1_v_pos].u128 == MM_VEC_FULL) {
         if (heap->l1_vecs[l0_idx].u128 == MM_VEC_FULL) {
             heap->l0_vec.u128 ^= ((SHIFT_HELPER) << l0_idx);
         }
         heap->l1_vecs[l0_idx].u128 ^= ((SHIFT_HELPER) << l1_v_pos);
     }
+    MM_DBG_CHECK;
     heap->l2_vecs[WBITS * l0_idx + l1_v_pos].u128 ^= (erase_mask << l2_v_pos);
+    MM_DBG_CHECK;
 
 #ifdef MM_DEBUG
     uint32_t after_count = MM_DBG_CHECK;
@@ -901,6 +912,7 @@ check_heap(const char * const f, const char * const fn, const uint32_t ln) {
 
     med_region_t * temp = heap->ll_mr_head;
     while (temp) {
+        assert((uint64_t)temp >= (heap_start));
         active_mr[active_mr_idx++] = temp;
         uint32_t manual_count      = 0;
         for (uint32_t _i = 0; _i < MM_MED_REGION_N_VECS; _i++) {
@@ -976,6 +988,7 @@ check_heap(const char * const f, const char * const fn, const uint32_t ln) {
                 MM_DBG_ASSERT(manual_count == temp_mr->avail_bits);
                 med_allocs += MM_MED_REGION_TOTAL_SLOTS - manual_count;
 
+                MM_DBG_ASSERT(temp_mr->avail_bits != MM_MED_REGION_TOTAL_SLOTS);
                 if (temp_mr->avail_bits == 0) {
                     for (uint32_t j = 0; j < active_mr_idx; j++) {
                         MM_DBG_ASSERT(temp_mr != active_mr[j]);
@@ -986,7 +999,9 @@ check_heap(const char * const f, const char * const fn, const uint32_t ln) {
                         if (temp_mr == active_mr[j]) {
                             break;
                         }
-                        MM_DBG_ASSERT(j != (active_mr_idx - 1));
+                        MM_DBG_VASSERT(j != (active_mr_idx - 1),
+                                       "Error from: %d\n",
+                                       ln);
                     }
                 }
             }
