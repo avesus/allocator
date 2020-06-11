@@ -16,6 +16,11 @@ typedef cast128_t word_t;
 
 
 const uint128_t SHIFT_HELPER = 1;
+
+#define EMPTY_VEC
+#ifdef EMPTY_VEC
+const uint128_t MM_VEC_EMPTY = (~0);
+#endif
 #define MM_VEC_FULL 0
 
 
@@ -83,8 +88,10 @@ typedef struct region_head {
     // memory starting here is initialized as 1s
     word_t l0_vec;                 // vec of free L1_VECS
     word_t l1_vecs[MM_N_L1_VECS];  // vec of free L2_VECS
+#ifdef EMPTY_VEC
+    word_t l1_empty[MM_N_L1_VECS];  // vec of completely from L2_VECS
+#endif
     word_t l2_vecs[MM_N_L2_VECS];  // vec of free pages
-
     //////////////////////////////////////////////////////////////////////
     // memory after this point is initialized as 0s
 
@@ -189,15 +196,6 @@ get_size(const word_t l2_size_vec, const uint32_t l2_v_pos) {
     return size + 1;
 }
 
-static uint32_t
-dbg_get_addr_size(const uint64_t addr) {
-    const uint64_t v_idx    = (((uint64_t)addr) - heap_start) / PAGE_SIZE;
-    const uint32_t l0_idx   = (v_idx / (WBITS * WBITS)) & (WBITS - 1);
-    const uint32_t l1_v_pos = (v_idx / WBITS) & (WBITS - 1);
-    const uint32_t l2_v_pos = v_idx & (WBITS - 1);
-
-    return get_size(heap->l2_size_vecs[WBITS * l0_idx + l1_v_pos], l2_v_pos);
-}
 
 static inline void
 set_mr(const uint64_t mr) {
@@ -254,11 +252,10 @@ init_heap() {
                                    MAP_ANONYMOUS | MAP_NORESERVE | MAP_PRIVATE,
                                    (-1),
                                    0);
-    
-    memset(heap, (~0), sizeof(word_t) * (1 + MM_N_L1_VECS + MM_N_L2_VECS));
-    heap_start =
-        ((((uint64_t)(heap + 1))) + MM_MED_REGION_SIZE - 1) &
-        (~(MM_MED_REGION_SIZE - 1));
+
+    memset(heap, (~0), offsetof(region_head_t, l2_size_vecs));
+    heap_start = ((((uint64_t)(heap + 1))) + MM_MED_REGION_SIZE - 1) &
+                 (~(MM_MED_REGION_SIZE - 1));
 
     MM_DBG_CHECK;
 }
@@ -678,8 +675,11 @@ find_contig_region_aligned(const uint32_t alignment,
 
 static uint64_t
 find_contig_region(const uint32_t npage_info) {
-    word_t         l0_vec       = heap->l0_vec;
-    word_t * const l1_vecs      = heap->l1_vecs;
+    word_t         l0_vec  = heap->l0_vec;
+    word_t * const l1_vecs = heap->l1_vecs;
+#ifdef EMPTY_VEC
+    word_t * const l1_empty = heap->l1_empty;
+#endif
     word_t * const l2_vecs      = heap->l2_vecs;
     word_t * const l2_size_vecs = heap->l2_size_vecs;
 
@@ -703,11 +703,23 @@ find_contig_region(const uint32_t npage_info) {
             else {
                 l1_idx += r;
             }
+#ifdef EMPTY_VEC
+            if ((MM_NPI_N_TOTAL(npage_info) > 64)
+                    ? (l1_empty[l1_idx].u128)
+                    : (l1_vecs[l1_idx].u128) != MM_VEC_FULL) {
+                const uint64_t ret = try_place((MM_NPI_N_TOTAL(npage_info) > 64)
+                                                   ? (l1_empty[l1_idx])
+                                                   : (l1_vecs[l1_idx]),
+                                               l2_vecs + (WBITS * l1_idx),
+                                               npage_info);
 
+#else
             if (l1_vecs[l1_idx].u128 != MM_VEC_FULL) {
                 const uint64_t ret = try_place(l1_vecs[l1_idx],
                                                l2_vecs + (WBITS * l1_idx),
                                                npage_info);
+
+#endif
 
                 if (ret != MM_CONTINUE) {
                     const uint32_t l1_v_pos = ret >> 32;
@@ -722,7 +734,9 @@ find_contig_region(const uint32_t npage_info) {
                     l2_size_vecs[WBITS * l1_idx + l1_v_pos].u128 |=
                         ((erase_mask >> 1) << l2_v_pos);
 
-
+#ifdef EMPTY_VEC
+                    l1_empty[l1_idx].u128 &= ~((SHIFT_HELPER) << l1_v_pos);
+#endif
                     if (l2_vecs[WBITS * l1_idx + l1_v_pos].u128 ==
                         MM_VEC_FULL) {
                         l1_vecs[l1_idx].u128 ^= (SHIFT_HELPER) << l1_v_pos;
@@ -761,7 +775,7 @@ dealloc(void * const addr) {
 #ifdef MM_DEBUG
     uint32_t start_count = MM_DBG_CHECK;
 #endif
-    
+
     const uint64_t v_idx = (((uint64_t)addr) - heap_start) / PAGE_SIZE;
 
     const uint32_t l0_idx   = (v_idx / (WBITS * WBITS)) & (WBITS - 1);
@@ -772,13 +786,19 @@ dealloc(void * const addr) {
         get_size(heap->l2_size_vecs[WBITS * l0_idx + l1_v_pos], l2_v_pos);
 
     const uint128_t erase_mask = (((SHIFT_HELPER) << npages) - 1);
-    
+
     if (heap->l2_vecs[WBITS * l0_idx + l1_v_pos].u128 == MM_VEC_FULL) {
         if (heap->l1_vecs[l0_idx].u128 == MM_VEC_FULL) {
             heap->l0_vec.u128 ^= ((SHIFT_HELPER) << l0_idx);
         }
         heap->l1_vecs[l0_idx].u128 ^= ((SHIFT_HELPER) << l1_v_pos);
     }
+#ifdef EMPTY_VEC
+    else if (heap->l2_vecs[WBITS * l0_idx + l1_v_pos].u128 == MM_VEC_EMPTY) {
+        heap->l1_empty[l0_idx].u128 |= (SHIFT_HELPER) << l1_v_pos;
+    }
+#endif
+
     MM_DBG_CHECK;
     heap->l2_vecs[WBITS * l0_idx + l1_v_pos].u128 ^= (erase_mask << l2_v_pos);
     MM_DBG_CHECK;
@@ -834,8 +854,18 @@ alloc(const size_t size) {
 }
 
 uint32_t
+addr_get_region_size(void * const addr) {
+    const uint64_t v_idx    = (((uint64_t)addr) - heap_start) / PAGE_SIZE;
+    const uint32_t l0_idx   = (v_idx / (WBITS * WBITS)) & (WBITS - 1);
+    const uint32_t l1_v_pos = (v_idx / WBITS) & (WBITS - 1);
+    const uint32_t l2_v_pos = v_idx & (WBITS - 1);
+
+    return get_size(heap->l2_size_vecs[WBITS * l0_idx + l1_v_pos], l2_v_pos);
+}
+
+
+uint32_t
 check_heap(const char * const f, const char * const fn, const uint32_t ln) {
-#ifdef MM_DEBUG
     uint32_t active_small_pages = 0;
     uint32_t med_pages          = 0;
     uint32_t active_med_pages   = 0;
@@ -857,14 +887,14 @@ check_heap(const char * const f, const char * const fn, const uint32_t ln) {
         }
         small_region_t * temp = heap->ll_sr_heads[i];
 
-        MM_DBG_ASSERT(MM_SR_GET_PREV(temp->info) == 0);
+        assert(MM_SR_GET_PREV(temp->info) == 0);
 
 
         const uint32_t size     = MM_SR_GET_SIZE(temp->info);
         const uint32_t list_idx = (size / MM_MIN_SIZE) - 1;
 
-        MM_DBG_ASSERT(size == ((i + 1) * 16));
-        MM_DBG_ASSERT(list_idx == i);
+        assert(size == ((i + 1) * 16));
+        assert(list_idx == i);
 
 
         small_region_t * prev_ptrs[32];
@@ -877,26 +907,26 @@ check_heap(const char * const f, const char * const fn, const uint32_t ln) {
               __LINE__,
               list_idx,
               i);
-        MM_DBG_ASSERT(list_idx == i);
+        assert(list_idx == i);
         while (temp) {
             active_small_pages++;
 
             for (uint32_t _i = 0; _i < prev_idx; _i++) {
-                MM_DBG_ASSERT(temp != prev_ptrs[i]);
+                assert(temp != prev_ptrs[i]);
             }
             prev_ptrs[prev_idx++] = temp;
 
-            MM_DBG_ASSERT(MM_SR_GET_SIZE(temp->info) == size);
+            assert(MM_SR_GET_SIZE(temp->info) == size);
             if (MM_SR_GET_NEXT(temp->info) != 0) {
-                MM_DBG_ASSERT(
-                    MM_SR_GET_PREV(MM_SR_GET_NEXT(temp->info)->info) == temp);
+                assert(MM_SR_GET_PREV(MM_SR_GET_NEXT(temp->info)->info) ==
+                       temp);
             }
             if (MM_SR_GET_PREV(temp->info) == 0) {
-                MM_DBG_ASSERT(heap->ll_sr_heads[i] == temp);
+                assert(heap->ll_sr_heads[i] == temp);
             }
             else {
-                MM_DBG_ASSERT(
-                    MM_SR_GET_NEXT(MM_SR_GET_PREV(temp->info)->info) == temp);
+                assert(MM_SR_GET_NEXT(MM_SR_GET_PREV(temp->info)->info) ==
+                       temp);
             }
             for (uint32_t _i = 0; _i < MM_SR_GET_N_VECS(size); _i++) {
                 active_small_allocs += bitcount_64(temp->vecs[_i]);
@@ -918,35 +948,35 @@ check_heap(const char * const f, const char * const fn, const uint32_t ln) {
         for (uint32_t _i = 0; _i < MM_MED_REGION_N_VECS; _i++) {
             manual_count += BITCOUNT(temp->vecs[_i]);
         }
-        MM_DBG_VASSERT(manual_count == temp->avail_bits,
-                       "%d != %d ->\n"
-                       "\t" WORD_FORMAT
-                       "\n"
-                       "\t" WORD_FORMAT
-                       "\n"
-                       "\t" WORD_FORMAT
-                       "\n"
-                       "\t" WORD_FORMAT "\n",
-                       manual_count,
-                       temp->avail_bits,
-                       WORD_PRINT(temp->vecs[0]),
-                       WORD_PRINT(temp->vecs[1]),
-                       WORD_PRINT(temp->vecs[2]),
-                       WORD_PRINT(temp->vecs[3]));
+        DBG_ASSERT(manual_count == temp->avail_bits,
+                   "%d != %d ->\n"
+                   "\t" WORD_FORMAT
+                   "\n"
+                   "\t" WORD_FORMAT
+                   "\n"
+                   "\t" WORD_FORMAT
+                   "\n"
+                   "\t" WORD_FORMAT "\n",
+                   manual_count,
+                   temp->avail_bits,
+                   WORD_PRINT(temp->vecs[0]),
+                   WORD_PRINT(temp->vecs[1]),
+                   WORD_PRINT(temp->vecs[2]),
+                   WORD_PRINT(temp->vecs[3]));
         active_med_allocs += MM_MED_REGION_TOTAL_SLOTS - manual_count;
         active_med_pages += MM_MED_REGION_SIZE / PAGE_SIZE;
 
         if (temp->next) {
-            MM_DBG_ASSERT(temp->next->prev == temp);
+            assert(temp->next->prev == temp);
         }
         if (temp->prev) {
-            MM_DBG_ASSERT(heap->ll_mr_head != temp);
-            MM_DBG_ASSERT(temp->prev->next == temp);
+            assert(heap->ll_mr_head != temp);
+            assert(temp->prev->next == temp);
         }
         else {
-            MM_DBG_ASSERT(heap->ll_mr_head == temp);
+            assert(heap->ll_mr_head == temp);
         }
-        MM_DBG_ASSERT(is_med_region((const uint64_t)temp));
+        assert(is_med_region((const uint64_t)temp));
         temp = temp->next;
     }
 
@@ -966,7 +996,7 @@ check_heap(const char * const f, const char * const fn, const uint32_t ln) {
                 const uint32_t l2_v_pos = v_idx & (WBITS - 1);
 
 
-                MM_DBG_VASSERT(
+                DBG_ASSERT(
                     get_size(heap->l2_size_vecs[WBITS * l0_idx + l1_v_pos],
                              l2_v_pos) == (MM_MED_REGION_SIZE / PAGE_SIZE),
                     "%lu != %lu\n",
@@ -978,20 +1008,20 @@ check_heap(const char * const f, const char * const fn, const uint32_t ln) {
                          (SHIFT_HELPER << l2_v_pos)));
 
 
-                MM_DBG_ASSERT(temp_mr->avail_bits >= 0);
-                MM_DBG_ASSERT(temp_mr->avail_bits < MM_MED_REGION_TOTAL_SLOTS);
+                assert(temp_mr->avail_bits >= 0);
+                assert(temp_mr->avail_bits < MM_MED_REGION_TOTAL_SLOTS);
 
                 uint32_t manual_count = 0;
                 for (uint32_t j = 0; j < MM_MED_REGION_N_VECS; j++) {
                     manual_count += BITCOUNT(temp_mr->vecs[j]);
                 }
-                MM_DBG_ASSERT(manual_count == temp_mr->avail_bits);
+                assert(manual_count == temp_mr->avail_bits);
                 med_allocs += MM_MED_REGION_TOTAL_SLOTS - manual_count;
 
-                MM_DBG_ASSERT(temp_mr->avail_bits != MM_MED_REGION_TOTAL_SLOTS);
+                assert(temp_mr->avail_bits != MM_MED_REGION_TOTAL_SLOTS);
                 if (temp_mr->avail_bits == 0) {
                     for (uint32_t j = 0; j < active_mr_idx; j++) {
-                        MM_DBG_ASSERT(temp_mr != active_mr[j]);
+                        assert(temp_mr != active_mr[j]);
                     }
                 }
                 else {
@@ -999,9 +1029,9 @@ check_heap(const char * const f, const char * const fn, const uint32_t ln) {
                         if (temp_mr == active_mr[j]) {
                             break;
                         }
-                        MM_DBG_VASSERT(j != (active_mr_idx - 1),
-                                       "Error from: %d\n",
-                                       ln);
+                        DBG_ASSERT(j != (active_mr_idx - 1),
+                                   "Error from: %d\n",
+                                   ln);
                     }
                 }
             }
@@ -1010,56 +1040,53 @@ check_heap(const char * const f, const char * const fn, const uint32_t ln) {
 
     for (uint32_t i = 0; i < MM_N_L2_VECS; i++) {
         if (l2_vecs[i].u128 == MM_VEC_FULL) {
-            MM_DBG_VASSERT(!(l1_vecs[(i / WBITS)].u128 &
-                             (SHIFT_HELPER << (i & (WBITS - 1)))),
-                           "Error: Invalid L1 "
-                           "for a full L2: "
-                           "%d\n",
-                           ln);
+            DBG_ASSERT(!(l1_vecs[(i / WBITS)].u128 &
+                         (SHIFT_HELPER << (i & (WBITS - 1)))),
+                       "Error: Invalid L1 "
+                       "for a full L2: "
+                       "%d\n",
+                       ln);
         }
         else {
-            MM_DBG_VASSERT((l1_vecs[(i / WBITS)].u128 &
-                            (SHIFT_HELPER << (i & (WBITS - 1)))),
-                           "Error: Invalid L1 "
-                           "for a partial L2: "
-                           "%d\n",
-                           ln);
+            DBG_ASSERT((l1_vecs[(i / WBITS)].u128 &
+                        (SHIFT_HELPER << (i & (WBITS - 1)))),
+                       "Error: Invalid L1 "
+                       "for a partial L2: "
+                       "%d\n",
+                       ln);
         }
         if (l1_vecs[(i / WBITS)].u128 == MM_VEC_FULL) {
-            MM_DBG_VASSERT(!(l0_vec.u128 & (SHIFT_HELPER << (i / WBITS))),
-                           "Error: Invalid L0 "
-                           "for a full L1: "
-                           "%d\n",
-                           ln);
+            DBG_ASSERT(!(l0_vec.u128 & (SHIFT_HELPER << (i / WBITS))),
+                       "Error: Invalid L0 "
+                       "for a full L1: "
+                       "%d\n",
+                       ln);
         }
         else {
-            MM_DBG_VASSERT((l0_vec.u128 & (SHIFT_HELPER << (i / WBITS))),
-                           "Error: Invalid L0 "
-                           "for a partial L1: "
-                           "%d\n"
-                           "\tl0_vec           "
-                           " : " WORD_FORMAT
-                           "\n"
-                           "\tl1_vec           "
-                           " : " WORD_FORMAT
-                           "\n"
-                           "\ti                "
-                           " : %d\n"
-                           "\ti_l1             "
-                           " : %d\n"
-                           "\ti_l0             "
-                           " : %d\n\n",
-                           ln,
-                           WORD_PRINT(l0_vec),
-                           WORD_PRINT(l1_vecs[i / WBITS]),
-                           i,
-                           i / WBITS,
-                           i / WBITS);
+            DBG_ASSERT((l0_vec.u128 & (SHIFT_HELPER << (i / WBITS))),
+                       "Error: Invalid L0 "
+                       "for a partial L1: "
+                       "%d\n"
+                       "\tl0_vec           "
+                       " : " WORD_FORMAT
+                       "\n"
+                       "\tl1_vec           "
+                       " : " WORD_FORMAT
+                       "\n"
+                       "\ti                "
+                       " : %d\n"
+                       "\ti_l1             "
+                       " : %d\n"
+                       "\ti_l0             "
+                       " : %d\n\n",
+                       ln,
+                       WORD_PRINT(l0_vec),
+                       WORD_PRINT(l1_vecs[i / WBITS]),
+                       i,
+                       i / WBITS,
+                       i / WBITS);
         }
         total_pages += (WBITS - BITCOUNT(l2_vecs[i]));
     }
     return total_pages;
-#else
-    return 0;
-#endif
 }

@@ -41,9 +41,9 @@ main(int argc, char ** argv) {
     const uint32_t nsizes = 1 << 20;
     uint32_t *     sizes  = (uint32_t *)mymmap_alloc(nsizes * sizeof(uint32_t));
     for (uint32_t i = 0; i < nsizes; i++) {
-        sizes[i] = rand() % (1 * PAGE_SIZE);
+        sizes[i] = rand() % (80 * PAGE_SIZE);
         while (sizes[i] == 0) {
-            sizes[i] = rand() % (1 * PAGE_SIZE);
+            sizes[i] = rand() % (80 * PAGE_SIZE);
         }
     }
 
@@ -59,7 +59,7 @@ main(int argc, char ** argv) {
     if (test == 0) {
         start_cycles = grabTSC();
         for (int32_t i = 0; i < tsize; i++) {
-            free_arr[i] = alloc(sizes[(true_idx++) & (nsizes - 1)]);
+            free_arr[i] = alloc(sizes[(true_idx) & (nsizes - 1)]);
             if (i == incr) {
                 for (int32_t j = 0; j <= incr; j++) {
                     dealloc(free_arr[j]);
